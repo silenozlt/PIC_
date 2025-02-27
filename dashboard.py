@@ -8,7 +8,7 @@ import streamlit as st
 # Carregar variáveis do .env
 load_dotenv()
 
-# Configuração do banco
+# Verificar se as variáveis de ambiente foram carregadas corretamente
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "user": os.getenv("DB_USER"),
@@ -21,38 +21,38 @@ if not all(DB_CONFIG.values()):
     st.error("Erro: Algumas variáveis de ambiente não foram carregadas corretamente.")
     st.stop()
 
-# Função para executar queries
+# Função para executar queries com commit opcional
 def run_query(query, commit=False):
-    """Executa consultas SQL no MySQL e retorna um DataFrame se for um SELECT."""
     conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor(dictionary=True)
+    cursor = conn.cursor()
 
+    # Executar a query
     cursor.execute(query)
 
+    # Se commit for True, confirmar a transação
     if commit:
         conn.commit()
-        cursor.close()
-        conn.close()
-        return None
 
-    # Se for um SELECT, retorna os resultados
-    if query.strip().upper().startswith("SELECT"):
-        result = cursor.fetchall()
-        df = pd.DataFrame(result)
-        cursor.close()
+    # Consumir qualquer resultado anterior (se houver)
+    if cursor.with_rows:
+        cursor.fetchall()  # Isso consome os resultados pendentes, evitando o erro
+
+    # Se for uma consulta SELECT, retornar o DataFrame
+    if query.strip().lower().startswith("select"):
+        df = pd.read_sql(query, conn)
         conn.close()
         return df
-
-    cursor.close()
+    
+    # Caso contrário, apenas fechar a conexão
     conn.close()
-    return None
 
 # Layout do dashboard
 st.set_page_config(page_title="Dashboard de Sócios", layout="wide")
+
 st.title("📊 Dashboard de Sócios e Consumo")
 
 # Abas para separar os relatórios
-tab1, tab2, tab3, tab4 = st.tabs(["📜 Convites", "🏠 Sócios por Bairro", "💰 Consumo", "📊 Consumo por Bairro"])
+tab1, tab5, tab2, tab3, tab4 = st.tabs(["📜 Convites", "🏠 Sócios por Cidade", "🏠 Sócios por Bairro", "💰 Consumo", "📊 Consumo por Bairro"])
 
 # 1️⃣ Convites Emitidos
 with tab1:
@@ -73,6 +73,9 @@ with tab1:
     df_convites = run_query(query_convites)
     st.dataframe(df_convites)
 
+    fig = px.bar(df_convites, x="id", y=["convite_gratuito", "convite_pago"], title=f"Convites por ID (Top {quantidade_convites})")
+    st.plotly_chart(fig)
+
 # 2️⃣ Sócios por Bairro
 with tab2:
     st.subheader("Sócios por Bairro")
@@ -87,6 +90,9 @@ with tab2:
     """
     df_socios = run_query(query_socios)
     st.dataframe(df_socios)
+
+    fig = px.bar(df_socios, x="bairro", y="total_socios", title=f"Quantidade de Sócios por Bairro (Top {quantidade_socios})")
+    st.plotly_chart(fig)
 
 # 3️⃣ Maiores Consumos
 with tab3:
@@ -108,6 +114,9 @@ with tab3:
     """
     df_consumo = run_query(query_consumo)
     st.dataframe(df_consumo)
+
+    fig = px.bar(df_consumo, x="cota", y="total_consumo", title=f"Top {quantidade_consumo} Maiores Consumos")
+    st.plotly_chart(fig)
 
 # 4️⃣ Consumo por Bairro
 with tab4:
@@ -150,6 +159,26 @@ with tab4:
     df_consumo_bairro = run_query(query_consumo_bairro)
 
     st.dataframe(df_consumo_bairro)
+
+# 2️⃣ Sócios por Cidade
+with tab5:
+    st.subheader("Sócios por Cidade")
+    quantidade_socios_city = st.selectbox("Selecione a quantidade de bairros a ser exibida:", [10, 20, 30, 50, 100], key="cidade")
+    query_socios_city = f"""
+    SELECT Cidade, COUNT(*) AS total_socios
+    FROM socios
+    WHERE cidade != ''
+    GROUP BY cidade
+    ORDER BY total_socios DESC
+    LIMIT {quantidade_socios};
+    """
+    df_socios_city = run_query(query_socios_city)
+    st.dataframe(df_socios_city)
+
+    # Ajuste no gráfico para usar a coluna "Cidade"
+    fig = px.bar(df_socios_city, x="Cidade", y="total_socios", title=f"Quantidade de Sócios por Cidade (Top {quantidade_socios_city})")
+    st.plotly_chart(fig)
+
 
     if not df_consumo_bairro.empty:
         fig = px.pie(df_consumo_bairro, names="bairro", values="consumo_bairro", title="Consumo por Bairro")
