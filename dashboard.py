@@ -4,6 +4,9 @@ import mysql.connector
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+import numpy as np
 
 # Carregar variáveis do .env
 load_dotenv()
@@ -21,30 +24,24 @@ if not all(DB_CONFIG.values()):
     st.error("Erro: Algumas variáveis de ambiente não foram carregadas corretamente.")
     st.stop()
 
-# Função para executar queries com commit opcional
 def run_query(query, commit=False):
     conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
+    cursor = conn.cursor(dictionary=True)
 
-    # Executar a query
-    cursor.execute(query)
-
-    # Se commit for True, confirmar a transação
-    if commit:
-        conn.commit()
-
-    # Consumir qualquer resultado anterior (se houver)
-    if cursor.with_rows:
-        cursor.fetchall()  # Isso consome os resultados pendentes, evitando o erro
-
-    # Se for uma consulta SELECT, retornar o DataFrame
-    if query.strip().lower().startswith("select"):
-        df = pd.read_sql(query, conn)
+    try:
+        cursor.execute(query)
+        if query.strip().lower().startswith("select"):
+            result = cursor.fetchall()
+            conn.close()
+            if result:
+                return pd.DataFrame(result)
+            else:
+                return pd.DataFrame()  # Retorna DataFrame vazio em vez de None
+        if commit:
+            conn.commit()
+        return None
+    finally:
         conn.close()
-        return df
-    
-    # Caso contrário, apenas fechar a conexão
-    conn.close()
 
 # Layout do dashboard
 st.set_page_config(page_title="Dashboard de Sócios", layout="wide")
@@ -52,7 +49,7 @@ st.set_page_config(page_title="Dashboard de Sócios", layout="wide")
 st.title("📊 Dashboard de Sócios e Consumo")
 
 # Abas para separar os relatórios
-tab1, tab5, tab2, tab3, tab4 = st.tabs(["📜 Convites", "🏠 Sócios por Cidade", "🏠 Sócios por Bairro", "💰 Consumo", "📊 Consumo por Bairro"])
+tab1, tab5, tab2, tab3, tab4, tab6 = st.tabs(["📜 Convites", "🏠 Sócios por Cidade", "🏠 Sócios por Bairro", "💰 Consumo", "📊 Consumo por Bairro", "🔍 Clusters de Perfil"])
 
 # 1️⃣ Convites Emitidos
 with tab1:
@@ -132,7 +129,8 @@ with tab4:
         s.estado_civil,
         COUNT(DISTINCT CASE WHEN s.tipo_socio != 'TITULAR' AND s.parentesco NOT IN ('Filho', 'Filha') THEN s.id END) AS qtd_dependentes,
         s.ocupacao,
-        SUM(c.total) AS total_consumo
+        SUM(c.total) AS total_consumo,
+        COUNT(DISTINCT s.id) AS qtd_socios
     FROM socios s
     LEFT JOIN consumo c ON (s.id = c.id)
     GROUP BY s.bairro
@@ -146,7 +144,8 @@ with tab4:
     query_consumo_bairro = f"""
     SELECT
         bairro, 
-        SUM(REPLACE(total_consumo,',','.')) AS consumo_bairro 
+        SUM(REPLACE(total_consumo,',','.')) AS consumo_bairro,
+        SUM(total_consumo) / (qtd_socios) AS ticket_medio
     FROM 
         x_bairro 
     GROUP BY
@@ -160,17 +159,28 @@ with tab4:
 
     st.dataframe(df_consumo_bairro)
 
+    # Gráfico com ticket médio
+    fig = px.bar(df_consumo_bairro, x="bairro", y=["consumo_bairro", "ticket_medio"], title=f"Consumo por Bairro (Top {quantidade_bairros})")
+    st.plotly_chart(fig)
+    
+    if not df_consumo_bairro.empty:
+        fig = px.pie(df_consumo_bairro, names="bairro", values="consumo_bairro", title="Consumo por Bairro")
+        st.plotly_chart(fig)
+    else:
+        st.warning("Nenhum consumo registrado para exibição.")
+
+
 # 2️⃣ Sócios por Cidade
 with tab5:
     st.subheader("Sócios por Cidade")
-    quantidade_socios_city = st.selectbox("Selecione a quantidade de bairros a ser exibida:", [10, 20, 30, 50, 100], key="cidade")
+    quantidade_socios_city = st.selectbox("Selecione a quantidade de cidades a ser exibida:", [10, 20, 30, 50, 100], key="cidade")
     query_socios_city = f"""
     SELECT Cidade, COUNT(*) AS total_socios
     FROM socios
     WHERE cidade != ''
     GROUP BY cidade
     ORDER BY total_socios DESC
-    LIMIT {quantidade_socios};
+    LIMIT {quantidade_socios_city};
     """
     df_socios_city = run_query(query_socios_city)
     st.dataframe(df_socios_city)
@@ -178,10 +188,67 @@ with tab5:
     # Ajuste no gráfico para usar a coluna "Cidade"
     fig = px.bar(df_socios_city, x="Cidade", y="total_socios", title=f"Quantidade de Sócios por Cidade (Top {quantidade_socios_city})")
     st.plotly_chart(fig)
+with tab6:
+    st.subheader("Análise de Perfil por Bairro")
 
-
-    if not df_consumo_bairro.empty:
-        fig = px.pie(df_consumo_bairro, names="bairro", values="consumo_bairro", title="Consumo por Bairro")
-        st.plotly_chart(fig)
+    query_perfil_bairros = """
+    SELECT 
+        bairro,
+        COUNT(DISTINCT cota) AS total_familias,
+        AVG(idade) AS idade_media,
+        SUM(CASE WHEN parentesco = 'Filho' OR parentesco = 'Filha' THEN 1 ELSE 0 END) / COUNT(DISTINCT cota) AS media_filhos_por_familia,  -- Média de filhos por família
+        COUNT(*) AS total_socios,
+        -- Perfil familiar dominante
+        (SELECT parentesco 
+         FROM socios s2
+         WHERE s2.bairro = s1.bairro
+         GROUP BY parentesco
+         ORDER BY COUNT(*) DESC
+         LIMIT 1) AS perfil_familiar_dominante
+    FROM socios s1
+    WHERE bairro IS NOT NULL AND bairro != ''
+    GROUP BY bairro
+    ORDER BY total_socios DESC
+    ;
+    """
+    
+    df_perfil = run_query(query_perfil_bairros)
+    
+    if df_perfil is None or df_perfil.empty:
+        st.warning("Não há dados suficientes para análise.")
     else:
-        st.warning("Nenhum consumo registrado para exibição.")
+        # Arredondar valores após consulta
+        df_perfil['idade_media'] = df_perfil['idade_media'].round(2)
+        df_perfil['media_filhos_por_familia'] = df_perfil['media_filhos_por_familia'].round(2)
+
+        st.dataframe(df_perfil)
+        
+        # Prepara os dados para clustering
+        df_cluster = df_perfil[['total_socios', 'total_familias', 'idade_media', 'media_filhos_por_familia']]
+        
+        # Normalização (opcional, mas recomendado para KMeans)
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        df_scaled = scaler.fit_transform(df_cluster)
+        
+        # Aplicar KMeans para clusterização
+        kmeans = KMeans(n_clusters=3, random_state=42)  # Definir o número de clusters
+        df_perfil['cluster'] = kmeans.fit_predict(df_scaled)
+        
+        # Exibir resultados
+        df_perfil["media_gasto_familia"] = df_perfil["total_socios"] / df_perfil["total_familias"]
+        df_perfil["media_gasto_familia"].fillna(0, inplace=True)  # Evita divisão por zero
+        
+        # Gráfico de dispersão para visualizar os bairros em cada cluster
+        fig = px.scatter(df_perfil, 
+                         x="total_socios", 
+                         y="media_filhos_por_familia", 
+                         color="cluster",  # A cor do ponto indica o cluster
+                         title="Distribuição de Bairros por Cluster",
+                         labels={"total_socios": "Total de Sócios", "media_filhos_por_familia": "Média de Filhos por Família"},
+                         hover_data=["bairro", "idade_media", "total_familias", "perfil_familiar_dominante"])  # Exibe mais informações no hover
+
+        st.plotly_chart(fig)
+
+        # Exibe os clusters
+        st.write("Cluster de Bairros:", df_perfil[['bairro', 'cluster']])
