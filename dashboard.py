@@ -193,6 +193,7 @@ with tab6:
 
     query_perfil_bairros = """
     SELECT 
+        cidade,
         bairro,
         COUNT(DISTINCT cota) AS total_familias,
         AVG(idade) AS idade_media,
