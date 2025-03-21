@@ -247,7 +247,7 @@ with tab6:
                          color="cluster",  # A cor do ponto indica o cluster
                          title="Distribuição de Bairros por Cluster",
                          labels={"total_socios": "Total de Sócios", "media_filhos_por_familia": "Média de Filhos por Família"},
-                         hover_data=["bairro", "idade_media", "total_familias", "perfil_familiar_dominante"])  # Exibe mais informações no hover
+                         hover_data=["cidade", "bairro", "idade_media", "total_familias", "perfil_familiar_dominante"])  # Exibe mais informações no hover
 
         st.plotly_chart(fig)
 
